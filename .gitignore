@@ -81,6 +81,7 @@ dmypy.json
 *.tbz
 *.rar
 *.7z
+/bm4d*
 
 # Jupyter Notebook
 .ipynb_checkpoints
