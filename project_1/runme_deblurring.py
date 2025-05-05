@@ -41,7 +41,7 @@ def cconv2_by_fft2_numpy(A, B, flag_invertB=False, eta=1e-2):
     return result
 
 class PnPADMMDeBlurr:
-    def __init__(self,denoiser,max_iter,rho,sigmas,kernel,reduce_rho=True,reduce_sigma=True,tol=1e-6):
+    def __init__(self,denoiser,max_iter,rho,sigmas,kernel,reduce_rho=False,reduce_sigma=True,tol=1e-6):
         '''
         denosiser (string): denosing function
         max_iter (int): maximum ADMM itterations
@@ -80,7 +80,7 @@ class PnPADMMDeBlurr:
 
         i = 0
         res = 10
-        pbar = tqdm(total=self.max_iter,desc='Residuals')
+        pbar = tqdm(total=self.max_iter,desc='Residuals',leave=False)
         while (res > self.tol) and i < self.max_iter:
             z_k_1, x_k_1, u_k_1 = self.pnp_admm_step(y, z_k, x_k, u_k)
             res_x = (1/np.sqrt(N)) * np.sqrt(np.sum((x_k_1-x_k)**2,axis=(0,1)))
@@ -122,19 +122,21 @@ class PnPADMMDeBlurr:
 
         Zk = numerator/denominator
         zk = np.real(np.fft.ifft2(Zk))
-        if self.reduce_rho:
-            self.rho *=1.1
-        if self.reduce_sigma:
-            self.sigmas[0] *= 0.8
+
         return zk
     
     def pnp_admm_step(self, y, z, x, u):
         # --- z-update: data fidelity ---
         z = self.z_update_fft2(y,x,u)
         # --- x-update: denoising ---
-        x = self.denoise_sample(z + u)
+        x = self.denoise_sample(z - u)
         # --- u-update: dual variable ---
-        u = u + z - x
+        u = u + x - z
+
+        if self.reduce_rho:
+            self.rho *=1.5
+        if self.reduce_sigma:
+            self.sigmas[0] *= 0.8
         return z, x, u
     
 def main():
@@ -147,16 +149,18 @@ def main():
     # image_names = ['1_Cameraman256','2_house']
     #hyper parameters
     denoiser = 'bm3d'
-    max_iter=4
-    rho=0.055
-    sigmas=[0.085]
+    max_iter=25
+    rho=0.2
+    sigmas=[0.4]
 
     #blurring kernel
     
     i = np.arange(-7, 8)
     j = np.arange(-7, 8)
-    ii, jj = np.meshgrid(i, j, indexing='ij')
-    kernel = 1 / (1 + ii**2 + jj**2)
+    kernel = np.zeros((len(i),len(j)))
+    for ii in range(len(i)):
+        for jj in range(len(j)):
+            kernel[ii,jj] = 1/(1+i[ii]**2+j[jj]**2)
     kernel /= np.sum(kernel)
 
     input_psnrs = []
@@ -166,7 +170,7 @@ def main():
     images_denoised = []
 
     dir_path = './test_set'
-    deblurrer = PnPADMMDeBlurr(denoiser=denoiser,max_iter=max_iter,rho=rho,sigmas=sigmas,kernel=kernel)
+    deblurrer = PnPADMMDeBlurr(denoiser=denoiser,max_iter=max_iter,rho=rho,sigmas=sigmas,kernel=kernel,reduce_sigma=False,reduce_rho=True)
     for name in image_names:
         try:
             img = plt.imread(f'{dir_path}/{name}.png')
@@ -249,7 +253,87 @@ def main():
         sigma_fixed_txt=''
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.savefig(f'./plots/pnp_admm_results_max_{deblurrer.denoiser}{rho_fixed_txt}{sigma_fixed_txt}.png')
+    print(f'Saved: ./plots/pnp_admm_results_max_{deblurrer.denoiser}{rho_fixed_txt}{sigma_fixed_txt}.png')
     plt.show()
-# Run the main script
+
+from itertools import product
+
+def run_grid_search():
+    sigmas_list = [0.01,0.04,0.08, 0.1,0.5]
+    rhos_list = [0.1, 0.2,0.3,0.4]
+    reduce_sigma_options = [True, False]
+
+    reduce_rho_options = [True, False]
+
+    best_psnr = -np.inf
+    best_config = None
+
+    for sigma, rho, reduce_sigma, reduce_rho in tqdm(product(sigmas_list, rhos_list, reduce_sigma_options, reduce_rho_options),total=len(sigmas_list)*len(rhos_list)*len(reduce_sigma_options)*len(reduce_rho_options)):
+        print(f"\nRunning: sigma={sigma}, rho={rho}, reduce_sigma={reduce_sigma}, reduce_rho={reduce_rho}")
+        denoiser = 'bm3d'
+        max_iter = 25
+        kernel = make_kernel()
+
+        deblurrer = PnPADMMDeBlurr(
+            denoiser=denoiser,
+            max_iter=max_iter,
+            rho=rho,
+            sigmas=[sigma],
+            kernel=kernel,
+            reduce_rho=reduce_rho,
+            reduce_sigma=reduce_sigma
+        )
+
+        avg_psnr = evaluate_deblurrer(deblurrer)
+        print(f'PSNR:{avg_psnr}')
+        if avg_psnr > best_psnr:
+            best_psnr = avg_psnr
+            best_config = (sigma, rho, reduce_sigma, reduce_rho)
+
+    print("\n==== Best Configuration ====")
+    print(f"Sigma: {best_config[0]}, Rho: {best_config[1]}, Reduce Sigma: {best_config[2]}, Reduce Rho: {best_config[3]}")
+    print(f"Average PSNR: {best_psnr:.2f}")
+
+def make_kernel():
+    i = np.arange(-7, 8)
+    j = np.arange(-7, 8)
+    kernel = np.zeros((len(i), len(j)))
+    for ii in range(len(i)):
+        for jj in range(len(j)):
+            kernel[ii, jj] = 1 / (1 + i[ii] ** 2 + j[jj] ** 2)
+    return kernel / np.sum(kernel)
+
+def evaluate_deblurrer(deblurrer):
+    image_names = ['1_Cameraman256', '2_house']
+    dir_path = './test_set'
+    input_psnrs = []
+    denoised_psnrs = []
+
+    for name in image_names:
+        try:
+            img = plt.imread(f'{dir_path}/{name}.png')
+        except Exception as e:
+            print(f"Failed to load {name}: {e}")
+            return -1
+
+        if img.ndim == 3:
+            img = np.mean(img, axis=2)
+        if img.dtype != np.float32 and img.max() > 1.0:
+            img = img.astype(np.float32) / 255.0
+
+        y = cconv2_by_fft2_numpy(img, deblurrer.kernel)
+        y = add_noise(y, sigma_e=0.01)
+        x_hat = deblurrer(y)
+
+        psnr_output = psnr(img, x_hat)
+        denoised_psnrs.append(psnr_output)
+
+    return np.mean(denoised_psnrs)
+
+
+# if __name__ == "__main__":
+#     run_grid_search()
+
+
 if __name__ == "__main__":
     main()

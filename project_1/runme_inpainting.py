@@ -66,7 +66,7 @@ def main():
 
     for name in image_names:
         try:
-            img = plt.imread(f'{name}.png')
+            img = plt.imread(f'test_set/{name}.png')
         except FileNotFoundError:
             print(f"Error: File {name}.png not found.")
             return -1
