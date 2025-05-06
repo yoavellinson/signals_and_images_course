@@ -4,25 +4,32 @@ from runme_denoising import bilateral_filter,psnr,add_noise
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-def AtA_add_eta_inv(self, vec, eta_reg=None):  ## same as AAt_add_eta_inv
-    I = vec.reshape(vec.shape[0], self.channels, self.img_dim, self.img_dim)
-    out = torch.zeros(I.shape[0], I.shape[1], I.shape[2], I.shape[3]).to(vec.device)
-    if eta_reg is None:
-        eta_reg = self.eta_reg
+def cconv2_invAAt_by_fft2_numpy(A,B,eta=0.01):
+    # assumes that A (2D image) is bigger than B (2D kernel)
 
-    for ch in range(out.shape[1]):
-        out[:,ch:ch+1, :, :] = cconv2_invAAt_by_fft2(I[:, ch:ch+1, :, :], self.kernel, vec.device, eta=eta_reg)
-    return out.reshape(vec.shape[0], -1)
-def At(self,vec):
-    I = vec.reshape(vec.shape[0], self.channels, self.img_dim, self.img_dim)
-    out = torch.zeros(I.shape[0], I.shape[1], I.shape[2], I.shape[3]).to(vec.device)
-    flipped_kernel = torch.fliplr(torch.flipud(torch.conj(self.kernel)))
-    for ch in range(out.shape[1]):
-        out[:,ch:ch+1, :, :] = cconv2_by_fft2(I[:, ch:ch+1, :, :], flipped_kernel, vec.device, flag_invertB=0)
-    return out.reshape(vec.shape[0], -1)
+    m, n = A.shape
+    mb, nb = B.shape
+
+    # Pad kernel to image size
+    bigB = np.zeros_like(A)
+    bigB[:mb, :nb] = B
+
+    # Roll to center the PSF
+    bigB = np.roll(bigB, shift=(-mb // 2, -nb // 2), axis=(0, 1))
+
+    # FFT of kernel and input
+    fft2B = np.fft.fft2(bigB)
+
+    fft2B_norm2 = np.abs(fft2B)**2
+    inv_fft2B_norm = 1 / (fft2B_norm2 + eta)
+
+    result = np.real(np.fft.ifft2(np.fft.fft2(A) * inv_fft2B_norm))
+
+    return result
 
 
-# z_k = AtA_add_eta_inv(At(y) + rho(x -u))
+
+# y_k = AtA_add_eta_inv(At(y) + rho(x -u))
 
 def cconv2_by_fft2_numpy(A, B, flag_invertB=False, eta=1e-2):
     """
@@ -84,80 +91,84 @@ class PnPADMMDeBlurr:
             sigma_s = self.sigmas[0]
             sigma_r = self.sigmas[-1]
             return bilateral_filter(y,sigma_s,sigma_r)
+        
+    def AtA_add_eta_inv_numpy(self, vec,):  ## same as AAt_add_eta_inv
+        I = vec.reshape(vec.shape[0], vec.shape[1])
+        
+        out = cconv2_invAAt_by_fft2_numpy(I, self.kernel, eta=self.rho)
 
-    def __call__(self, y):
+        return out.reshape(vec.shape[0], -1)
+
+    def At_numpy(self,vec):
+        I = vec.reshape(vec.shape[0], vec.shape[1])
+        flipped_kernel = np.fliplr(np.flipud(np.conj(self.kernel)))
+        out = cconv2_by_fft2_numpy(I,flipped_kernel, flag_invertB=0)
+        return out.reshape(vec.shape[0], -1)
+    
+    def __call__(self, y,img):
         '''
         y: blurred image (2D numpy array)
         Returns: Deblurred image
         '''
         # Initialization
         N = y.shape[0]*y.shape[1]
-        z_k = y.copy()
+        #as in the paper
+
         x_k = y.copy()
+        v_k = y.copy()
         u_k = np.zeros_like(y)
+
         rho_tmp = self.rho
         sigma_tmp = self.sigmas[0]
 
         i = 0
         res = 10
         pbar = tqdm(total=self.max_iter,desc='Residuals',leave=False)
+
         while (res > self.tol) and i < self.max_iter:
-            z_k_1, x_k_1, u_k_1 = self.pnp_admm_step(y, z_k, x_k, u_k)
+            x_k_1,v_k_1,u_k_1 = self.pnp_admm_step(y,x_k,v_k,u_k)
+            psnr_mid = psnr(x_k_1,img)
+            print(f'PSNR:{psnr_mid}')
             res_x = (1/np.sqrt(N)) * np.sqrt(np.sum((x_k_1-x_k)**2,axis=(0,1)))
-            res_z = (1/np.sqrt(N)) * np.sqrt(np.sum((z_k_1-z_k)**2,axis=(0,1)))
+            res_z = (1/np.sqrt(N)) * np.sqrt(np.sum((v_k_1-v_k)**2,axis=(0,1)))
             res_u = (1/np.sqrt(N)) * np.sqrt(np.sum((u_k_1-u_k)**2,axis=(0,1)))
+
             res_tmp = res_u+res_x+res_z
-            if res_tmp>res:
+            if res_tmp>res and i >20:
                 break
             res= res_tmp
-            z_k=z_k_1
+
+            v_k=v_k_1
             x_k=x_k_1
             u_k=u_k_1
+            # self.rho*=1.5
+            # if self.reduce_rho:
+            #     self.rho *=1.5
+            # if self.reduce_sigma:
+            #     self.sigmas[0] *= 0.8
             i+=1
             pbar.update(1)
             pbar.set_description(f'Res={res:.8f}')
+
         self.rho = rho_tmp
         self.sigmas[0] = sigma_tmp
         return x_k
+            
+    def prox(self,y,x_tilde):
+        return self.AtA_add_eta_inv_numpy(self.At_numpy(y) + self.rho*(x_tilde))
     
-    #based on Tom's FFT2 function
-    #https://github.com/tirer-lab/DDPG/blob/fcd17382d6b2d084b4bd2686c531b61e392cc1a9/functions/fft_operators.py#L222
-    def z_update_fft2(self,y,x,u):
-        m, n = y.shape[:2]
-        mb, nb = self.kernel.shape[:2]
-
-        # pad, multiply and transform back
-        bigB = np.zeros((m, n))
-        bigB[:mb,:nb] = self.kernel
-        bigB = np.roll(bigB, (-int((mb-1)/2), -int((mb-1)/2)), axis=(0,1))  # pad PSF with zeros to whole image domain, and center it
-
-        H = np.fft.fft2(bigB)
-
-        f_k_f_y = np.fft.fft2(y) * np.conj(H)
-        f_x_plus_u = np.fft.fft2(x-u)
-        f_k_spec = np.abs(H)**2
-
-        numerator = f_k_f_y + self.rho * f_x_plus_u
-        denominator = f_k_spec + self.rho
-
-        Zk = numerator/denominator
-        zk = np.real(np.fft.ifft2(Zk))
-
-        return zk
+    def pnp_admm_step(self,y,x,v,u):
+        x_tilde = v-u
     
-    def pnp_admm_step(self, y, z, x, u):
-        # --- z-update: data fidelity ---
-        z = self.z_update_fft2(y,x,u)
-        # --- x-update: denoising ---
-        x = self.denoise_sample(z - u)
-        # --- u-update: dual variable ---
-        u = u + x - z
+        x = self.prox(y,x_tilde)
 
-        if self.reduce_rho:
-            self.rho *=1.5
-        if self.reduce_sigma:
-            self.sigmas[0] *= 0.8
-        return z, x, u
+        v_tilde = x+u
+
+        v= self.denoise_sample(v_tilde)
+
+        u += x-v
+
+        return x,v,u
     
 def main():
     """
@@ -166,12 +177,12 @@ def main():
     """
     image_names = ['1_Cameraman256', '2_house', '3_peppers256', '4_Lena512',
                    '5_barbara', '6_boat', '7_hill', '8_couple']
-    # image_names = ['1_Cameraman256','2_house']
+    image_names = ['1_Cameraman256','2_house']
     #hyper parameters
     denoiser = 'bm3d'
     max_iter=25
-    rho=0.2
-    sigmas=[0.4]
+    rho=0.1
+    sigmas=[0.05]
 
     #blurring kernel
     
@@ -190,7 +201,7 @@ def main():
     images_denoised = []
 
     dir_path = './test_set'
-    deblurrer = PnPADMMDeBlurr(denoiser=denoiser,max_iter=max_iter,rho=rho,sigmas=sigmas,kernel=kernel,reduce_sigma=False,reduce_rho=True)
+    deblurrer = PnPADMMDeBlurr(denoiser=denoiser,max_iter=max_iter,rho=rho,sigmas=sigmas,kernel=kernel,reduce_sigma=False,reduce_rho=False,tol=1e-5)
     for name in image_names:
         try:
             img = plt.imread(f'{dir_path}/{name}.png')
@@ -209,10 +220,10 @@ def main():
 
         y = cconv2_by_fft2_numpy(img, kernel)
         y = add_noise(y,sigma_e=0.01)
-        x_hat = deblurrer(y)
+        x_hat = deblurrer(y,img)
 
-        psnr_input = psnr(img, y)
-        psnr_output = psnr(img, x_hat)
+        psnr_input = psnr(y, img)
+        psnr_output = psnr(x_hat,img)
 
         input_psnrs.append(psnr_input)
         denoised_psnrs.append(psnr_output)
@@ -223,7 +234,7 @@ def main():
         images_gt.append(img)
         images_noisy.append(y)
         images_denoised.append(x_hat)
-
+    
     input_psnr_mean =np.mean(input_psnrs)
     output_psnr_mean =np.mean(denoised_psnrs)
 
@@ -281,9 +292,9 @@ from itertools import product
 def run_grid_search():
     sigmas_list = [0.01,0.04,0.08, 0.1,0.5]
     rhos_list = [0.1, 0.2,0.3,0.4]
-    reduce_sigma_options = [True, False]
+    reduce_sigma_options = [False]
 
-    reduce_rho_options = [True, False]
+    reduce_rho_options = [ False]
 
     best_psnr = -np.inf
     best_config = None
@@ -351,9 +362,6 @@ def evaluate_deblurrer(deblurrer):
     return np.mean(denoised_psnrs)
 
 
-# if __name__ == "__main__":
-#     run_grid_search()
-
-
 if __name__ == "__main__":
+    # run_grid_search()
     main()

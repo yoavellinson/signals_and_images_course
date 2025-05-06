@@ -20,7 +20,7 @@ def psnr(x, x_gt):
         PSNR value in decibels (float)
     """
     mse = np.mean((x - x_gt) ** 2)
-    return 10 * np.log10(1.0 / mse)
+    return 10 * np.log10(1 / mse)
 
 def add_noise(img, sigma_e):
     """
