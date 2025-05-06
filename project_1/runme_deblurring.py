@@ -4,6 +4,26 @@ from runme_denoising import bilateral_filter,psnr,add_noise
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
+def AtA_add_eta_inv(self, vec, eta_reg=None):  ## same as AAt_add_eta_inv
+    I = vec.reshape(vec.shape[0], self.channels, self.img_dim, self.img_dim)
+    out = torch.zeros(I.shape[0], I.shape[1], I.shape[2], I.shape[3]).to(vec.device)
+    if eta_reg is None:
+        eta_reg = self.eta_reg
+
+    for ch in range(out.shape[1]):
+        out[:,ch:ch+1, :, :] = cconv2_invAAt_by_fft2(I[:, ch:ch+1, :, :], self.kernel, vec.device, eta=eta_reg)
+    return out.reshape(vec.shape[0], -1)
+def At(self,vec):
+    I = vec.reshape(vec.shape[0], self.channels, self.img_dim, self.img_dim)
+    out = torch.zeros(I.shape[0], I.shape[1], I.shape[2], I.shape[3]).to(vec.device)
+    flipped_kernel = torch.fliplr(torch.flipud(torch.conj(self.kernel)))
+    for ch in range(out.shape[1]):
+        out[:,ch:ch+1, :, :] = cconv2_by_fft2(I[:, ch:ch+1, :, :], flipped_kernel, vec.device, flag_invertB=0)
+    return out.reshape(vec.shape[0], -1)
+
+
+# z_k = AtA_add_eta_inv(At(y) + rho(x -u))
+
 def cconv2_by_fft2_numpy(A, B, flag_invertB=False, eta=1e-2):
     """
     Circular 2D convolution or deconvolution using FFT (NumPy version).
