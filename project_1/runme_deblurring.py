@@ -122,23 +122,24 @@ class PnPADMMDeBlurr:
         i = 0
         res = 10
         pbar = tqdm(total=self.max_iter,desc='Residuals',leave=False)
-
+        psnr_old = 0
         while (res > self.tol) and i < self.max_iter:
             x_k_1,v_k_1,u_k_1 = self.pnp_admm_step(y,x_k,v_k,u_k)
             psnr_mid = psnr(x_k_1,img)
-            print(f'PSNR:{psnr_mid}')
-            res_x = (1/np.sqrt(N)) * np.sqrt(np.sum((x_k_1-x_k)**2,axis=(0,1)))
-            res_z = (1/np.sqrt(N)) * np.sqrt(np.sum((v_k_1-v_k)**2,axis=(0,1)))
-            res_u = (1/np.sqrt(N)) * np.sqrt(np.sum((u_k_1-u_k)**2,axis=(0,1)))
+            # print(f'PSNR:{psnr_mid}')
+            res = psnr_mid - psnr_old
+            # res_x = (1/np.sqrt(N)) * np.sqrt(np.sum((x_k_1-x_k)**2,axis=(0,1)))
+            # res_z = (1/np.sqrt(N)) * np.sqrt(np.sum((v_k_1-v_k)**2,axis=(0,1)))
+            # res_u = (1/np.sqrt(N)) * np.sqrt(np.sum((u_k_1-u_k)**2,axis=(0,1)))
 
-            res_tmp = res_u+res_x+res_z
-            if res_tmp>res and i >20:
+            # res_tmp = res_u+res_x+res_z
+            if res < 0 and i>10: 
                 break
-            res= res_tmp
-
+            
             v_k=v_k_1
             x_k=x_k_1
             u_k=u_k_1
+            psnr_old = psnr_mid
             # self.rho*=1.5
             # if self.reduce_rho:
             #     self.rho *=1.5
@@ -146,7 +147,7 @@ class PnPADMMDeBlurr:
             #     self.sigmas[0] *= 0.8
             i+=1
             pbar.update(1)
-            pbar.set_description(f'Res={res:.8f}')
+            pbar.set_description(f'PSNR={psnr_mid:.8f}')
 
         self.rho = rho_tmp
         self.sigmas[0] = sigma_tmp
@@ -180,8 +181,10 @@ def main():
     #hyper parameters
     denoiser = 'bm3d'
     max_iter=25
-    rho=0.01
-    sigmas=[0.1]
+    # rho=0.1
+    # sigmas=[0.04]
+    sigmas = [0.09]
+    rho = 0.013
 
     #blurring kernel
     
@@ -289,8 +292,10 @@ def main():
 from itertools import product
 
 def run_grid_search():
-    sigmas_list = [0.01,0.04,0.08, 0.1,0.5]
-    rhos_list = [0.1, 0.2,0.3,0.4]
+    sigmas_list_s = [0.1,0.09,0.11]
+    # sigmas_list_r = [0.01,0.04,0.08, 0.1,0.5]
+
+    rhos_list = [0.007,0.01,0.008, 0.012,0.013]
     reduce_sigma_options = [False]
 
     reduce_rho_options = [ False]
@@ -298,8 +303,8 @@ def run_grid_search():
     best_psnr = -np.inf
     best_config = None
 
-    for sigma, rho, reduce_sigma, reduce_rho in tqdm(product(sigmas_list, rhos_list, reduce_sigma_options, reduce_rho_options),total=len(sigmas_list)*len(rhos_list)*len(reduce_sigma_options)*len(reduce_rho_options)):
-        print(f"\nRunning: sigma={sigma}, rho={rho}, reduce_sigma={reduce_sigma}, reduce_rho={reduce_rho}")
+    for sigma_s, rho, reduce_sigma, reduce_rho in tqdm(product(sigmas_list_s, rhos_list, reduce_sigma_options, reduce_rho_options),total=len(sigmas_list_s)*len(rhos_list)*len(reduce_sigma_options)*len(reduce_rho_options)):
+        print(f"\nRunning: sigma={sigma_s}, rho={rho}, reduce_sigma={reduce_sigma}, reduce_rho={reduce_rho}")
         denoiser = 'bm3d'
         max_iter = 25
         kernel = make_kernel()
@@ -308,7 +313,7 @@ def run_grid_search():
             denoiser=denoiser,
             max_iter=max_iter,
             rho=rho,
-            sigmas=[sigma],
+            sigmas=[sigma_s],
             kernel=kernel,
             reduce_rho=reduce_rho,
             reduce_sigma=reduce_sigma
@@ -318,7 +323,7 @@ def run_grid_search():
         print(f'PSNR:{avg_psnr}')
         if avg_psnr > best_psnr:
             best_psnr = avg_psnr
-            best_config = (sigma, rho, reduce_sigma, reduce_rho)
+            best_config = (sigma_s, rho, reduce_sigma, reduce_rho)
 
     print("\n==== Best Configuration ====")
     print(f"Sigma: {best_config[0]}, Rho: {best_config[1]}, Reduce Sigma: {best_config[2]}, Reduce Rho: {best_config[3]}")
@@ -353,7 +358,7 @@ def evaluate_deblurrer(deblurrer):
 
         y = cconv2_by_fft2_numpy(img, deblurrer.kernel)
         y = add_noise(y, sigma_e=0.01)
-        x_hat = deblurrer(y)
+        x_hat = deblurrer(y,img)
 
         psnr_output = psnr(img, x_hat)
         denoised_psnrs.append(psnr_output)
