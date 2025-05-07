@@ -31,7 +31,7 @@ def cconv2_invAAt_by_fft2_numpy(A,B,eta=0.01):
 
 # y_k = AtA_add_eta_inv(At(y) + rho(x -u))
 
-def cconv2_by_fft2_numpy(A, B, flag_invertB=False, eta=1e-2):
+def cconv2_by_fft2_numpy(A, B,flag_conjB=False, eta=1e-2):
     """
     Circular 2D convolution or deconvolution using FFT (NumPy version).
     
@@ -58,11 +58,10 @@ def cconv2_by_fft2_numpy(A, B, flag_invertB=False, eta=1e-2):
     fft2B = np.fft.fft2(bigB)
     fft2A = np.fft.fft2(A)
 
-    if flag_invertB:
+    if flag_conjB:
         # Tikhonov regularization for inverse filtering
-        fft2B = np.conj(fft2B) / (np.abs(fft2B)**2 + eta)
+        fft2B = np.conj(fft2B)# / (np.abs(fft2B)**2 + eta)
 
-    # Convolution or deconvolution
     result = np.real(np.fft.ifft2(fft2A * fft2B))
 
     return result
@@ -92,7 +91,7 @@ class PnPADMMDeBlurr:
             sigma_r = self.sigmas[-1]
             return bilateral_filter(y,sigma_s,sigma_r)
         
-    def AtA_add_eta_inv_numpy(self, vec,):  ## same as AAt_add_eta_inv
+    def AtA_add_eta_inv_numpy(self, vec,):
         I = vec.reshape(vec.shape[0], vec.shape[1])
         
         out = cconv2_invAAt_by_fft2_numpy(I, self.kernel, eta=self.rho)
@@ -101,8 +100,7 @@ class PnPADMMDeBlurr:
 
     def At_numpy(self,vec):
         I = vec.reshape(vec.shape[0], vec.shape[1])
-        flipped_kernel = np.fliplr(np.flipud(np.conj(self.kernel)))
-        out = cconv2_by_fft2_numpy(I,flipped_kernel, flag_invertB=0)
+        out = cconv2_by_fft2_numpy(I,self.kernel, flag_conjB=True)
         return out.reshape(vec.shape[0], -1)
     
     def __call__(self, y,img):
@@ -155,11 +153,12 @@ class PnPADMMDeBlurr:
         return x_k
             
     def prox(self,y,x_tilde):
-        return self.AtA_add_eta_inv_numpy(self.At_numpy(y) + self.rho*(x_tilde))
+        a = self.At_numpy(y) + self.rho*(x_tilde)
+        return self.AtA_add_eta_inv_numpy(a)
     
     def pnp_admm_step(self,y,x,v,u):
         x_tilde = v-u
-    
+
         x = self.prox(y,x_tilde)
 
         v_tilde = x+u
@@ -177,12 +176,12 @@ def main():
     """
     image_names = ['1_Cameraman256', '2_house', '3_peppers256', '4_Lena512',
                    '5_barbara', '6_boat', '7_hill', '8_couple']
-    image_names = ['1_Cameraman256','2_house']
+    # image_names = ['1_Cameraman256','2_house']
     #hyper parameters
     denoiser = 'bm3d'
     max_iter=25
-    rho=0.1
-    sigmas=[0.05]
+    rho=0.01
+    sigmas=[0.1]
 
     #blurring kernel
     
