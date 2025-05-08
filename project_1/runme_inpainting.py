@@ -110,6 +110,7 @@ def main():
                              transform=axs[row_idx, 0].transAxes)
 
     plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.savefig('./plots/pnp_admm_inpainting.png')
     plt.show()
 
 if __name__ == "__main__":

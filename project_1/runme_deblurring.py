@@ -67,7 +67,7 @@ def cconv2_by_fft2_numpy(A, B,flag_conjB=False, eta=1e-2):
     return result
 
 class PnPADMMDeBlurr:
-    def __init__(self,denoiser,max_iter,rho,sigmas,kernel,reduce_rho=False,reduce_sigma=True,tol=1e-6):
+    def __init__(self,denoiser,max_iter,rho,sigmas,kernel,gamma=1,eta=1,tol=1e-6):
         '''
         denosiser (string): denosing function
         max_iter (int): maximum ADMM itterations
@@ -79,10 +79,11 @@ class PnPADMMDeBlurr:
         self.max_iter = max_iter
         self.rho = rho
         self.sigmas = sigmas
-        self.reduce_rho = reduce_rho
-        self.reduce_sigma=reduce_sigma
+        self.gamma = gamma
+        self.eta=eta
         self.tol = tol
-
+    def get_txt(self):
+        return f'rho_{self.rho}_sigma_{self.sigmas},eta_{self.eta}_gamma_{self.gamma}'
     def denoise_sample(self,y):
         if self.denoiser =='bm3d':
             return bm3d(y,sigma_psd=self.sigmas[0])
@@ -127,24 +128,24 @@ class PnPADMMDeBlurr:
             x_k_1,v_k_1,u_k_1 = self.pnp_admm_step(y,x_k,v_k,u_k)
             psnr_mid = psnr(x_k_1,img)
             # print(f'PSNR:{psnr_mid}')
-            res = psnr_mid - psnr_old
-            # res_x = (1/np.sqrt(N)) * np.sqrt(np.sum((x_k_1-x_k)**2,axis=(0,1)))
-            # res_z = (1/np.sqrt(N)) * np.sqrt(np.sum((v_k_1-v_k)**2,axis=(0,1)))
-            # res_u = (1/np.sqrt(N)) * np.sqrt(np.sum((u_k_1-u_k)**2,axis=(0,1)))
+            delta_psnr = psnr_mid - psnr_old
+            res_x = (1/np.sqrt(N)) * np.sqrt(np.sum((x_k_1-x_k)**2,axis=(0,1)))
+            res_z = (1/np.sqrt(N)) * np.sqrt(np.sum((v_k_1-v_k)**2,axis=(0,1)))
+            res_u = (1/np.sqrt(N)) * np.sqrt(np.sum((u_k_1-u_k)**2,axis=(0,1)))
 
-            # res_tmp = res_u+res_x+res_z
-            if res < 0 and i>10: 
+            res = res_u+res_x+res_z
+            # if res < 0 and i>10: 
+            #     break
+            if delta_psnr >0:
+                self.rho *= self.gamma
+            elif delta_psnr<0 and i > 5:
                 break
-            
             v_k=v_k_1
             x_k=x_k_1
             u_k=u_k_1
             psnr_old = psnr_mid
             # self.rho*=1.5
-            # if self.reduce_rho:
-            #     self.rho *=1.5
-            # if self.reduce_sigma:
-            #     self.sigmas[0] *= 0.8
+            self.sigmas[0] *=self.eta
             i+=1
             pbar.update(1)
             pbar.set_description(f'PSNR={psnr_mid:.8f}')
@@ -152,7 +153,7 @@ class PnPADMMDeBlurr:
         self.rho = rho_tmp
         self.sigmas[0] = sigma_tmp
         return x_k
-            
+    
     def prox(self,y,x_tilde):
         a = self.At_numpy(y) + self.rho*(x_tilde)
         return self.AtA_add_eta_inv_numpy(a)
@@ -170,21 +171,21 @@ class PnPADMMDeBlurr:
 
         return x,v,u
     
-def main():
+def main(denoiser='bm3d'):
     """
     Denoise a set of grayscale images using bilateral filtering,
     compute and print PSNR values, and display visual comparisons.
     """
     image_names = ['1_Cameraman256', '2_house', '3_peppers256', '4_Lena512',
                    '5_barbara', '6_boat', '7_hill', '8_couple']
-    # image_names = ['1_Cameraman256','2_house']
     #hyper parameters
-    denoiser = 'bm3d'
+
     max_iter=25
-    # rho=0.1
-    # sigmas=[0.04]
-    sigmas = [0.09]
-    rho = 0.013
+    sigmas = [0.09] if denoiser =='bm3d' else [0.5,0.08]
+    rho = 0.013 if denoiser == 'bm3d' else 0.2
+
+    eta = 0.99 if denoiser=='bm3d' else 1
+    gamma=1.01 if denoiser=='bm3d' else 1
 
     #blurring kernel
     
@@ -203,7 +204,7 @@ def main():
     images_denoised = []
 
     dir_path = './test_set'
-    deblurrer = PnPADMMDeBlurr(denoiser=denoiser,max_iter=max_iter,rho=rho,sigmas=sigmas,kernel=kernel,reduce_sigma=False,reduce_rho=False,tol=1e-5)
+    deblurrer = PnPADMMDeBlurr(denoiser=denoiser,max_iter=max_iter,rho=rho,sigmas=sigmas,kernel=kernel,eta=eta,gamma=gamma,tol=1e-5)
     for name in image_names:
         try:
             img = plt.imread(f'{dir_path}/{name}.png')
@@ -248,10 +249,9 @@ def main():
     else:
         sigma_txt = f'sigma_s={deblurrer.sigmas[0]:.4f},sigma_r={deblurrer.sigmas[-1]:.4f}'
     
-    if deblurrer.reduce_sigma:
-        sigma_txt = f'sigma_reduced'
+   
     
-    hyperparams = f'{sigma_txt},rho={rho if not deblurrer.reduce_rho else 'increased'}'
+    hyperparams = f'{sigma_txt},rho={rho},eta={eta},gamma={gamma}'
     # ===============================
     #  Plot: x_gt, y (noisy), x̂ (denoised)
     # ===============================
@@ -278,33 +278,33 @@ def main():
         # Add image name label on the left of each row
         axs[row_idx, 0].text(-0.1, 0.5, name, fontsize=10, va='center', ha='right',
                              transform=axs[row_idx, 0].transAxes, rotation=0)
-    rho_fixed_txt = '_rho_fixed' if not deblurrer.reduce_rho else '_rho_reduced'
-    sigma_fixed_txt = '_sigma_fixed' if not deblurrer.reduce_sigma else '_sigma_reduced'
+
 
     if deblurrer.denoiser!='bm3d':
         rho_fixed_txt=''
         sigma_fixed_txt=''
     plt.tight_layout(rect=[0, 0, 1, 0.96])
-    plt.savefig(f'./plots/pnp_admm_results_max_{deblurrer.denoiser}{rho_fixed_txt}{sigma_fixed_txt}.png')
-    print(f'Saved: ./plots/pnp_admm_results_max_{deblurrer.denoiser}{rho_fixed_txt}{sigma_fixed_txt}.png')
+    filename = f'./plots/pnp_admm_results_max_{deblurrer.get_txt()}.png'
+    plt.savefig(filename)
+    print(f'Saved: {filename}')
     plt.show()
 
 from itertools import product
 
 def run_grid_search():
-    sigmas_list_s = [0.1,0.09,0.11]
+    sigmas_list_s = [0.09]
     # sigmas_list_r = [0.01,0.04,0.08, 0.1,0.5]
 
-    rhos_list = [0.007,0.01,0.008, 0.012,0.013]
-    reduce_sigma_options = [False]
+    rhos_list = [0.013]
 
-    reduce_rho_options = [ False]
+    gamma_list = [1.01,1.05,1.1]
+    eta_list = [0.99,0.95,0.9,1,1.1]
 
     best_psnr = -np.inf
     best_config = None
 
-    for sigma_s, rho, reduce_sigma, reduce_rho in tqdm(product(sigmas_list_s, rhos_list, reduce_sigma_options, reduce_rho_options),total=len(sigmas_list_s)*len(rhos_list)*len(reduce_sigma_options)*len(reduce_rho_options)):
-        print(f"\nRunning: sigma={sigma_s}, rho={rho}, reduce_sigma={reduce_sigma}, reduce_rho={reduce_rho}")
+    for sigma_s, rho, eta, gamma in tqdm(product(sigmas_list_s, rhos_list, eta_list, gamma_list),total=len(sigmas_list_s)*len(rhos_list)*len(eta_list)*len(gamma_list)):
+        print(f"\nRunning: sigma={sigma_s}, rho={rho}, reduce_sigma={eta}, increase_rho={gamma}")
         denoiser = 'bm3d'
         max_iter = 25
         kernel = make_kernel()
@@ -315,18 +315,18 @@ def run_grid_search():
             rho=rho,
             sigmas=[sigma_s],
             kernel=kernel,
-            reduce_rho=reduce_rho,
-            reduce_sigma=reduce_sigma
+            gamma=gamma,
+            eta=eta
         )
 
         avg_psnr = evaluate_deblurrer(deblurrer)
         print(f'PSNR:{avg_psnr}')
         if avg_psnr > best_psnr:
             best_psnr = avg_psnr
-            best_config = (sigma_s, rho, reduce_sigma, reduce_rho)
+            best_config = (sigma_s, rho, eta, gamma)
 
     print("\n==== Best Configuration ====")
-    print(f"Sigma: {best_config[0]}, Rho: {best_config[1]}, Reduce Sigma: {best_config[2]}, Reduce Rho: {best_config[3]}")
+    print(f"Sigma: {best_config[0]}, Rho: {best_config[1]}, Reduce Sigma: {best_config[2]}, Increase Rho: {best_config[3]}")
     print(f"Average PSNR: {best_psnr:.2f}")
 
 def make_kernel():
@@ -367,5 +367,5 @@ def evaluate_deblurrer(deblurrer):
 
 
 if __name__ == "__main__":
-    # run_grid_search()
-    main()
+    # main(denoiser='BL') #for bilateral filter denoiser
+    main(denoiser='bm3d')
