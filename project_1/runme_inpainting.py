@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from bm3d import bm3d
-
+from tqdm import tqdm
 np.random.seed(0)
 
 def psnr(x, x_gt):
@@ -18,7 +18,7 @@ def create_mask(shape, percent):
     mask[np.random.choice(total_pixels, num_samples, replace=False)] = True
     return mask.reshape(shape)
 
-def inpainting_admm_pnp(y, mask, denoiser, rho=0.8, beta=0.01, num_iters=25):
+def inpainting_admm_pnp(y, mask, denoiser, rho=0.8, beta=0.01, gamma=1,eta=1,num_iters=25):
     """
     ADMM-PnP for image inpainting using a given denoiser.
     Inputs:
@@ -32,30 +32,34 @@ def inpainting_admm_pnp(y, mask, denoiser, rho=0.8, beta=0.01, num_iters=25):
         x_hat    : Reconstructed image.
     """
     x = np.copy(y)
-    z = np.copy(x)
+    v = np.copy(x)
     u = np.zeros_like(x)
 
-    for k in range(num_iters):
-        # x-update via denoising
-        x = denoiser(z - u, sigma_psd=np.sqrt(beta / rho))
+    for k in tqdm(range(num_iters)):
+        
+        x = np.where(mask,
+                    (y + rho * (v - u)) / (1 + rho),
+                    v - u)
 
-        # z-update (proximal step)
-        z_new = np.where(mask,
-                         (y + rho * (x + u)) / (1 + rho),
-                         x + u)
+        v_tilde = x+u
 
-        # u-update (dual update)
-        u = u + x - z_new
-        z = z_new
+        v= denoiser(v_tilde,sigma_psd=np.sqrt(beta / rho))
+
+        u += x-v
+        rho *=gamma
+        beta*=eta**2
 
     return x
 
 def main():
     image_names = ['1_Cameraman256', '2_house', '3_peppers256', '4_Lena512',
                    '5_barbara', '6_boat', '7_hill', '8_couple']
+    # image_names = ['1_Cameraman256', '2_house']
     observed_fraction = 0.2
     rho = 0.2
     beta = 0.006
+    gamma=1.001
+    eta=0.999
     num_iters = 25
 
     input_psnrs = []
@@ -79,7 +83,7 @@ def main():
         mask = create_mask(img.shape, observed_fraction)
         y = img * mask  # observed pixels only
 
-        x_hat = inpainting_admm_pnp(y, mask, bm3d, rho, beta, num_iters)
+        x_hat = inpainting_admm_pnp(y=y, mask=mask,denoiser= bm3d, rho=rho, beta=beta, num_iters=num_iters,gamma=gamma,eta=eta)
 
         psnr_input = psnr(img, y)
         psnr_output = psnr(img, x_hat)
@@ -110,7 +114,7 @@ def main():
                              transform=axs[row_idx, 0].transAxes)
 
     plt.tight_layout(rect=[0, 0, 1, 0.96])
-    plt.savefig('./plots/pnp_admm_inpainting.png')
+    plt.savefig('./plots/pnp_admm_inpainting_yoav.png')
     plt.show()
 
 if __name__ == "__main__":
