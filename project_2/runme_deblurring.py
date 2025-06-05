@@ -376,6 +376,196 @@ def run_grid_search():
     print(f"Sigma: {best_config[0]}, Rho: {best_config[1]}, Reduce Sigma: {best_config[2]}, Increase Rho: {best_config[3]}")
     print(f"Average PSNR: {best_psnr:.2f}")
 
+def main_both():
+    """
+    Denoise a set of grayscale images using bilateral filtering,
+    compute and print PSNR values, and display visual comparisons.
+    """
+    # image_names = ['1_Cameraman256', '2_house']
+    image_names = ['1_Cameraman256', '2_house', '3_peppers256', '4_Lena512',
+                   '5_barbara', '6_boat', '7_hill', '8_couple']
+    
+
+    #blurring kernel
+    i = np.arange(-7, 8)
+    j = np.arange(-7, 8)
+    kernel = np.zeros((len(i),len(j)))
+    for ii in range(len(i)):
+        for jj in range(len(j)):
+            kernel[ii,jj] = 1/(1+i[ii]**2+j[jj]**2)
+    kernel /= np.sum(kernel)
+
+    #hyper parameters
+    max_iter=25
+    eta = 0.99 
+    gamma=1.01 
+
+    deblurrer_bm3d = PnPADMMDeBlurr(denoiser='bm3d',max_iter=max_iter,rho=0.013,sigmas=[0.09],kernel=kernel,eta=eta,gamma=gamma,tol=1e-5)
+    deblurrer_ircnn = PnPADMMDeBlurr(denoiser='ircnn',max_iter=max_iter,rho=0.008,sigmas=[0.11],kernel=kernel,eta=eta,gamma=gamma,tol=1e-5)
+
+
+
+    input_psnrs = []
+    denoised_psnrs_bm3d = []
+    denoised_psnrs_ircnn = []
+
+    images_gt = []
+    images_noisy = []
+    images_denoised_bm3d = []
+    images_denoised_ircnn = []
+
+
+    dir_path = './test_set'
+    for name in image_names:
+        try:
+            img = plt.imread(f'{dir_path}/{name}.png')
+        except FileNotFoundError:
+            print(f"Error: File {dir_path}+/{name}.png not found.")
+            return -1
+        except Exception as e:
+            print(f"Could not load {name}.png due to error: {e}")
+            return -1
+
+        # Convert to grayscale and normalize
+        if img.ndim == 3:
+            img = np.mean(img, axis=2)  # convert RGB to grayscale
+        if img.dtype != np.float32 and img.max() > 1.0:
+            img = img.astype(np.float32) / 255.0  # normalize to [0, 1]
+
+        y = cconv2_by_fft2_numpy(img, kernel)
+        y = add_noise(y,sigma_e=0.01)
+        x_hat_bm3d = deblurrer_bm3d(y,img)
+        x_hat_ircnn = deblurrer_ircnn(y,img)
+
+        psnr_input = psnr(y, img)
+        psnr_output_bm3d = psnr(x_hat_bm3d,img)
+        psnr_output_ircnn = psnr(x_hat_ircnn,img)
+
+        input_psnrs.append(psnr_input)
+        denoised_psnrs_bm3d.append(psnr_output_bm3d)
+        denoised_psnrs_ircnn.append(psnr_output_ircnn)
+
+        print(f"{name}: Input PSNR = {psnr_input:.2f}, Output PSNR BM3D = {psnr_output_bm3d:.2f} Output PSNR IRCNN = {psnr_output_ircnn:.2f}")
+
+        # Save for visualization
+        images_gt.append(img)
+        images_noisy.append(y)
+        images_denoised_bm3d.append(x_hat_bm3d)
+        images_denoised_ircnn.append(x_hat_ircnn)
+    
+    input_psnr_mean =np.mean(input_psnrs)
+    output_psnr_mean_bm3d =np.mean(denoised_psnrs_bm3d)
+    output_psnr_mean_ircnn =np.mean(denoised_psnrs_ircnn)
+
+    print("\nAverage Input PSNR: {:.2f}".format(input_psnr_mean))
+    print(f"Average Deblurred PSNR BM3D/IRCNN: {output_psnr_mean_bm3d}/{output_psnr_mean_ircnn}")
+
+   
+    
+    # ===============================
+    #  Plot: x_gt, y (noisy), x̂ (denoised)
+    # ===============================
+    fig, axs = plt.subplots(len(image_names), 4, figsize=(10, 2 * len(image_names)))
+    fig.suptitle(f'Deblurring Results PSNR BM3D/IRCNN: {output_psnr_mean_bm3d:.2f}/{output_psnr_mean_ircnn:.2f}[dB]', fontsize=16)
+
+    for row_idx, name in enumerate(image_names):
+        img = images_gt[row_idx]  # Ground truth
+        y = images_noisy[row_idx]  # Noisy image
+        x_hat_bm3d = images_denoised_bm3d[row_idx]  # Denoised output
+        x_hat_ircnn = images_denoised_ircnn[row_idx]  # Denoised output
+
+        for col_idx, image in enumerate([img, y, x_hat_bm3d,x_hat_bm3d]):
+            axs[row_idx, col_idx].imshow(image, cmap='gray', vmin=0, vmax=1)
+            axs[row_idx, col_idx].axis('off')
+            # Set column titles only on first row
+            if row_idx == 0:
+                if col_idx == 0:
+                    axs[row_idx, col_idx].set_title("x_gt")
+                elif col_idx == 1:
+                    axs[row_idx, col_idx].set_title("y (Blurred)")
+                    axs[row_idx, col_idx].text(0.5, -0.1,
+                                            f'{input_psnrs[row_idx]:.2f} [dB]',
+                                            transform=axs[row_idx, col_idx].transAxes,
+                                            ha='center', va='top', fontsize=12)
+                elif col_idx ==2 :
+                    axs[row_idx, col_idx].set_title("x̂ (BM3D)")
+                    axs[row_idx, col_idx].text(0.5, -0.1,
+                                            f'{denoised_psnrs_bm3d[row_idx]:.2f} [dB]',
+                                            transform=axs[row_idx, col_idx].transAxes,
+                                            ha='center', va='top', fontsize=12)
+                elif col_idx ==3 :
+                    axs[row_idx, col_idx].set_title("x̂ (IRCNN)")
+                    axs[row_idx, col_idx].text(0.5, -0.1,
+                                            f'{denoised_psnrs_ircnn[row_idx]:.2f} [dB]',
+                                            transform=axs[row_idx, col_idx].transAxes,
+                                            ha='center', va='top', fontsize=12)
+            else:
+                if col_idx == 1:
+                    axs[row_idx, col_idx].text(0.5, -0.1,
+                                            f'{input_psnrs[row_idx]:.2f} [dB]',
+                                            transform=axs[row_idx, col_idx].transAxes,
+                                            ha='center', va='top', fontsize=12)
+                elif col_idx ==2 :
+                    axs[row_idx, col_idx].text(0.5, -0.1,
+                                            f'{denoised_psnrs_bm3d[row_idx]:.2f} [dB]',
+                                            transform=axs[row_idx, col_idx].transAxes,
+                                            ha='center', va='top', fontsize=12)
+                elif col_idx ==3 :
+                    axs[row_idx, col_idx].text(0.5, -0.1,
+                                            f'{denoised_psnrs_ircnn[row_idx]:.2f} [dB]',
+                                            transform=axs[row_idx, col_idx].transAxes,
+                                            ha='center', va='top', fontsize=12)
+        # Add image name label on the left of each row
+        axs[row_idx, 0].text(-0.1, 0.5, name, fontsize=10, va='center', ha='right',
+                             transform=axs[row_idx, 0].transAxes, rotation=0)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    filename = f'./plots/pnp_admm_results_both.png'
+    plt.savefig(filename)
+    print(f'Saved: {filename}')
+    plt.show()
+
+from itertools import product
+
+def run_grid_search():
+    sigmas_list_s = [0.1,0.08,0.06]
+    # sigmas_list_r = [0.01,0.04,0.08, 0.1,0.5]
+
+    rhos_list = [0.009,0.01,0.1]
+
+    eta_list = [1,0.99,0.999,0.95,0.9]
+
+    gamma_list = [1]
+
+    best_psnr = -np.inf
+    best_config = None
+
+    for sigma_s, rho, eta, gamma in tqdm(product(sigmas_list_s, rhos_list, eta_list, gamma_list),total=len(sigmas_list_s)*len(rhos_list)*len(eta_list)*len(gamma_list)):
+        print(f"\nRunning: sigma={sigma_s}, rho={rho}, reduce_sigma={eta}, increase_rho={gamma}")
+        denoiser = 'ircnn'
+        max_iter = 25
+        kernel = make_kernel()
+
+        deblurrer = PnPADMMDeBlurr(
+            denoiser=denoiser,
+            max_iter=max_iter,
+            rho=rho,
+            sigmas=[sigma_s],
+            kernel=kernel,
+            gamma=gamma,
+            eta=eta
+        )
+
+        avg_psnr = evaluate_deblurrer(deblurrer)
+        print(f'PSNR:{avg_psnr}')
+        if avg_psnr > best_psnr:
+            best_psnr = avg_psnr
+            best_config = (sigma_s, rho, eta, gamma)
+
+    print("\n==== Best Configuration ====")
+    print(f"Sigma: {best_config[0]}, Rho: {best_config[1]}, Reduce Sigma: {best_config[2]}, Increase Rho: {best_config[3]}")
+    print(f"Average PSNR: {best_psnr:.2f}")
+
 def make_kernel():
     i = np.arange(-7, 8)
     j = np.arange(-7, 8)
@@ -415,5 +605,6 @@ def evaluate_deblurrer(deblurrer):
 
 if __name__ == "__main__":
     # main(denoiser='BL') #for bilateral filter denoiser
-    main(denoiser='ircnn')
+    # main(denoiser='ircnn')
     # run_grid_search()
+    main_both()
